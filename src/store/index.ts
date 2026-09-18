@@ -1,5 +1,6 @@
 import { configureStore, createSlice, PayloadAction, combineReducers } from '@reduxjs/toolkit';
 import { storage } from '../utils/storage';
+import { generateId } from '../utils/format';
 import type {
   Customer,
   SkinAnalysis,
@@ -15,7 +16,10 @@ import type {
   Review,
   Attendance,
   Commission,
-  WaitList
+  WaitList,
+  Payment,
+  DailyStatement,
+  CommissionEntry
 } from '../types';
 import {
   mockCustomers,
@@ -32,7 +36,8 @@ import {
   mockReviews,
   mockAttendance,
   mockCommissions,
-  mockWaitList
+  mockWaitList,
+  mockPayments
 } from '../mock';
 
 interface AppState {
@@ -51,6 +56,8 @@ interface AppState {
   attendance: Attendance[];
   commissions: Commission[];
   waitList: WaitList[];
+  payments: Payment[];
+  dailyStatements: DailyStatement[];
   initialized: boolean;
 }
 
@@ -66,6 +73,17 @@ const loadState = (): AppState => {
         const b64 = firstCustomer.avatar.replace('data:image/svg+xml;base64,', '');
         try {
           atob(b64);
+          // 迁移旧数据：补充日结模块所需数据
+          if (!saved.payments) {
+            saved.payments = mockPayments(
+              saved.customers.map((c) => c.id),
+              saved.services,
+              saved.employees
+            ) as Payment[];
+          }
+          if (!saved.dailyStatements) {
+            saved.dailyStatements = [];
+          }
           return saved;
         } catch (e) {
           console.log('Detected corrupted data, regenerating...');
@@ -101,6 +119,8 @@ const loadState = (): AppState => {
     attendance: mockAttendance(employeeIds),
     commissions: mockCommissions(employeeIds),
     waitList: mockWaitList(customerIds, serviceIds),
+    payments: mockPayments(customerIds, services, employees) as Payment[],
+    dailyStatements: [],
     initialized: true
   };
 };
@@ -237,6 +257,73 @@ const appSlice = createSlice({
         else if (membership.totalSpent > 5000) membership.level = 'silver';
       }
       saveState(state);
+    },
+    addPayment: (state, action: PayloadAction<Payment>) => {
+      state.payments.unshift(action.payload);
+      saveState(state);
+    },
+    saveStatement: (state, action: PayloadAction<DailyStatement>) => {
+      const index = state.dailyStatements.findIndex(s => s.id === action.payload.id);
+      if (index !== -1) {
+        state.dailyStatements[index] = action.payload;
+      } else {
+        state.dailyStatements.unshift(action.payload);
+      }
+      saveState(state);
+    },
+    confirmStatement: (state, action: PayloadAction<string>) => {
+      const statement = state.dailyStatements.find(s => s.id === action.payload);
+      if (statement && statement.status === 'draft') {
+        statement.status = 'confirmed';
+        statement.confirmedAt = new Date().toISOString();
+        statement.confirmedBy = '管理员';
+        saveState(state);
+      }
+    },
+    updateStatement: (
+      state,
+      action: PayloadAction<{ id: string; remark?: string; commissions?: CommissionEntry[]; reason: string }>
+    ) => {
+      const statement = state.dailyStatements.find(s => s.id === action.payload.id);
+      if (!statement) return;
+      const changes: { field: string; label: string; from: string; to: string }[] = [];
+
+      if (action.payload.remark !== undefined && action.payload.remark !== statement.remark) {
+        changes.push({
+          field: 'remark',
+          label: '备注',
+          from: statement.remark || '(空)',
+          to: action.payload.remark || '(空)'
+        });
+        statement.remark = action.payload.remark;
+      }
+
+      if (action.payload.commissions) {
+        action.payload.commissions.forEach((c) => {
+          const old = statement.commissions.find((o) => o.employeeId === c.employeeId);
+          if (old && old.diffNote !== c.diffNote) {
+            const employee = state.employees.find((e) => e.id === c.employeeId);
+            changes.push({
+              field: `diffNote:${c.employeeId}`,
+              label: `${employee?.name || c.employeeId} 提成差异说明`,
+              from: old.diffNote || '(空)',
+              to: c.diffNote || '(空)'
+            });
+            old.diffNote = c.diffNote;
+          }
+        });
+      }
+
+      if (changes.length > 0) {
+        statement.revisions.push({
+          id: generateId(),
+          revisedAt: new Date().toISOString(),
+          revisedBy: '管理员',
+          reason: action.payload.reason,
+          changes
+        });
+        saveState(state);
+      }
     }
   }
 });
@@ -263,7 +350,11 @@ export const {
   addWaitList,
   updateWaitList,
   deleteWaitList,
-  addServiceRecord
+  addServiceRecord,
+  addPayment,
+  saveStatement,
+  confirmStatement,
+  updateStatement
 } = appSlice.actions;
 
 export const store = configureStore({

@@ -6,6 +6,7 @@ import {
   AppstoreOutlined,
   CalendarOutlined,
   ScheduleOutlined,
+  AccountBookOutlined,
   UserOutlined,
   LogoutOutlined,
   SettingOutlined,
@@ -43,6 +44,11 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       key: '/appointments',
       icon: <CalendarOutlined />,
       label: '预约排期',
+    },
+    {
+      key: '/statements',
+      icon: <AccountBookOutlined />,
+      label: '日结账单',
     },
     {
       key: '/schedules',

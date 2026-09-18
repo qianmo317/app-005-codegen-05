@@ -157,6 +157,67 @@ export interface Commission {
   commissionDate: string;
 }
 
+export type PaymentMethod = 'cash' | 'card' | 'voucher';
+
+export interface Payment {
+  id: string;
+  type: 'payment' | 'refund';
+  customerId: string;
+  serviceId: string;
+  employeeId: string;
+  listPrice: number;
+  amount: number;
+  method: PaymentMethod;
+  paidAt: string;
+  refundOf?: string;
+  reason?: string;
+  note: string;
+  createdAt: string;
+}
+
+export interface CategorySummary {
+  category: string;
+  count: number;
+  amount: number;
+}
+
+export interface CommissionEntry {
+  employeeId: string;
+  listBase: number;
+  received: number;
+  diff: number;
+  diffNote: string;
+}
+
+export interface StatementRevision {
+  id: string;
+  revisedAt: string;
+  revisedBy: string;
+  reason: string;
+  changes: { field: string; label: string; from: string; to: string }[];
+}
+
+export interface DailyStatement {
+  id: string;
+  statementNo: string;
+  businessDate: string;
+  type: 'main' | 'supplement';
+  seq: number;
+  status: 'draft' | 'confirmed';
+  totalIncome: number;
+  totalRefund: number;
+  netIncome: number;
+  byMethod: Record<PaymentMethod, number>;
+  byCategory: CategorySummary[];
+  commissions: CommissionEntry[];
+  paymentIds: string[];
+  remark: string;
+  createdAt: string;
+  confirmedAt?: string;
+  confirmedBy?: string;
+  revisions: StatementRevision[];
+}
+
 export interface DashboardStats {
   monthlyRevenue: number;
   newCustomers: number;

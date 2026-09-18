@@ -70,7 +70,15 @@ export const getStatusColor = (status: string): string => {
     booked: 'green',
     mild: 'green',
     moderate: 'orange',
-    severe: 'red'
+    severe: 'red',
+    cash: 'green',
+    card: 'blue',
+    voucher: 'orange',
+    payment: 'green',
+    refund: 'red',
+    main: 'blue',
+    supplement: 'purple',
+    draft: 'gold'
   };
   return colors[status] || 'default';
 };
@@ -112,7 +120,15 @@ export const getStatusText = (status: string): string => {
     phone: '电话',
     wechat: '微信',
     walk_in: '到店',
-    online: '线上'
+    online: '线上',
+    cash: '现金',
+    card: '刷卡',
+    voucher: '券',
+    payment: '收款',
+    refund: '退款',
+    main: '主单',
+    supplement: '补充单',
+    draft: '草稿'
   };
   return texts[status] || status;
 };

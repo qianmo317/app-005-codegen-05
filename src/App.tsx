@@ -10,6 +10,7 @@ import CustomerDetail from "./pages/customers/detail";
 import ServiceList from "./pages/services/list";
 import PackageList from "./pages/services/packages";
 import AppointmentCalendar from "./pages/appointments/calendar";
+import Statements from "./pages/statements";
 import EmployeeSchedule from "./pages/schedules";
 import EmployeeList from "./pages/employees/list";
 import "./styles/global.less";
@@ -52,6 +53,7 @@ export default function App() {
               <Route path="/services" element={<ServiceList />} />
               <Route path="/packages" element={<PackageList />} />
               <Route path="/appointments" element={<AppointmentCalendar />} />
+              <Route path="/statements" element={<Statements />} />
               <Route path="/schedules" element={<EmployeeSchedule />} />
               <Route path="/employees" element={<EmployeeList />} />
             </Routes>

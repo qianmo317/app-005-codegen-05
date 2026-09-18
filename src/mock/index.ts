@@ -417,3 +417,70 @@ export const mockWaitList = (customerIds: string[], serviceIds: string[]) => {
   }
   return waitList;
 };
+
+export const mockPayments = (
+  customerIds: string[],
+  services: { id: string; price: number }[],
+  employees: { id: string; role: string }[]
+) => {
+  const payments = [];
+  const methods = ['cash', 'card', 'voucher'];
+  const staffIds = employees
+    .filter((e) => e.role === 'beautician' || e.role === 'technician')
+    .map((e) => e.id);
+  let seq = 1;
+  const nextId = () => `PAY${String(seq++).padStart(6, '0')}`;
+
+  for (let day = 30; day >= 0; day--) {
+    const count = day === 0 ? Random.integer(6, 9) : Random.integer(3, 8);
+    for (let i = 0; i < count; i++) {
+      const service = services[Random.integer(0, services.length - 1)];
+      const discount = Math.random() > 0.85 ? Random.integer(1, 10) * 10 : 0;
+      const paid = new Date();
+      paid.setDate(paid.getDate() - day);
+      paid.setHours(Random.integer(9, 20), Random.integer(0, 59), 0, 0);
+
+      payments.push({
+        id: nextId(),
+        type: 'payment',
+        customerId: customerIds[Random.integer(0, customerIds.length - 1)],
+        serviceId: service.id,
+        employeeId: staffIds[Random.integer(0, staffIds.length - 1)],
+        listPrice: service.price,
+        amount: service.price - discount,
+        method: methods[Random.integer(0, 2)],
+        paidAt: paid.toISOString(),
+        note: discount > 0 ? `会员优惠减免 ¥${discount}` : '',
+        createdAt: paid.toISOString()
+      });
+    }
+  }
+
+  const refundReasons = ['顾客对效果不满意', '预约冲突取消服务', '重复收款退回', '顾客临时有事取消'];
+  const candidates = payments.filter(
+    (p) => Date.now() - new Date(p.paidAt).getTime() > 2 * 24 * 3600 * 1000
+  );
+  for (let i = 0; i < 8 && candidates.length > 0; i++) {
+    const idx = Random.integer(0, candidates.length - 1);
+    const origin = candidates.splice(idx, 1)[0];
+    const refunded = new Date(new Date(origin.paidAt).getTime() + Random.integer(1, 2) * 24 * 3600 * 1000);
+    const finalDate = refunded.getTime() > Date.now() ? new Date() : refunded;
+
+    payments.push({
+      id: nextId(),
+      type: 'refund',
+      customerId: origin.customerId,
+      serviceId: origin.serviceId,
+      employeeId: origin.employeeId,
+      listPrice: -origin.listPrice,
+      amount: -origin.amount,
+      method: origin.method,
+      paidAt: finalDate.toISOString(),
+      refundOf: origin.id,
+      reason: refundReasons[Random.integer(0, refundReasons.length - 1)],
+      note: '',
+      createdAt: finalDate.toISOString()
+    });
+  }
+  return payments;
+};
