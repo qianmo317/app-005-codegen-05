@@ -1,4 +1,4 @@
-import { configureStore, createSlice, PayloadAction, combineReducers } from '@reduxjs/toolkit';
+import { configureStore, createSlice, PayloadAction } from '@reduxjs/toolkit';
 import { storage } from '../utils/storage';
 import type {
   Customer,
@@ -15,7 +15,10 @@ import type {
   Review,
   Attendance,
   Commission,
-  WaitList
+  WaitList,
+  PaymentEntry,
+  ClosingStatement,
+  ManualReconItem
 } from '../types';
 import {
   mockCustomers,
@@ -34,6 +37,17 @@ import {
   mockCommissions,
   mockWaitList
 } from '../mock';
+import { mockClosing } from '../mock/closing';
+import {
+  computeStatementData,
+  diffStatements,
+  genPaymentId,
+  genRevisionId,
+  nextSeq,
+  nowIso,
+  round2,
+  statementNo,
+} from '../utils/closing';
 
 interface AppState {
   customers: Customer[];
@@ -51,6 +65,8 @@ interface AppState {
   attendance: Attendance[];
   commissions: Commission[];
   waitList: WaitList[];
+  paymentEntries: PaymentEntry[];
+  closingStatements: ClosingStatement[];
   initialized: boolean;
 }
 
@@ -66,14 +82,21 @@ const loadState = (): AppState => {
         const b64 = firstCustomer.avatar.replace('data:image/svg+xml;base64,', '');
         try {
           atob(b64);
+          // 兼容旧存档：补齐每日结账模块数据
+          if (!saved.paymentEntries || !saved.closingStatements) {
+            const seed = mockClosing(saved.customers, saved.services, saved.employees);
+            saved.paymentEntries = seed.payments;
+            saved.closingStatements = seed.statements;
+            storage.set(STORAGE_KEY, saved);
+          }
           return saved;
-        } catch (e) {
+        } catch {
           console.log('Detected corrupted data, regenerating...');
           storage.clear();
         }
       }
     }
-  } catch (e) {
+  } catch {
     console.log('Loading fresh data...');
   }
 
@@ -84,6 +107,7 @@ const loadState = (): AppState => {
   const employees = mockEmployees() as Employee[];
   const employeeIds = employees.map(e => e.id);
   const packages = mockPackages() as Package[];
+  const closingSeed = mockClosing(customers, services, employees);
 
   return {
     customers,
@@ -101,6 +125,8 @@ const loadState = (): AppState => {
     attendance: mockAttendance(employeeIds),
     commissions: mockCommissions(employeeIds),
     waitList: mockWaitList(customerIds, serviceIds),
+    paymentEntries: closingSeed.payments,
+    closingStatements: closingSeed.statements,
     initialized: true
   };
 };
@@ -237,6 +263,222 @@ const appSlice = createSlice({
         else if (membership.totalSpent > 5000) membership.level = 'silver';
       }
       saveState(state);
+    },
+
+    /* ============ 每日结账单 ============ */
+
+    /** 登记一笔收款流水（未结账流水 statementId 为 null） */
+    addPaymentEntry: (state, action: PayloadAction<Omit<PaymentEntry, 'id' | 'createdAt' | 'statementId'>>) => {
+      state.paymentEntries.unshift({
+        ...action.payload,
+        id: genPaymentId(),
+        statementId: null,
+        createdAt: nowIso(),
+      });
+      saveState(state);
+    },
+
+    /** 生成/刷新某营业日的结账单草稿（汇总当前所有未结账流水） */
+    upsertDraftStatement: (state, action: PayloadAction<{ businessDate: string }>) => {
+      const { businessDate } = action.payload;
+      const unlocked = state.paymentEntries.filter(
+        (e) => e.businessDate === businessDate && !e.statementId
+      );
+      const existingDraft = state.closingStatements.find(
+        (s) => s.businessDate === businessDate && s.status === 'draft'
+      );
+      if (!existingDraft && unlocked.length === 0) {
+        throw new Error('该营业日没有未结账的流水，无需出单');
+      }
+      const seq = existingDraft
+        ? existingDraft.seq
+        : nextSeq(state.closingStatements, businessDate);
+      const type = seq > 1 ? 'supplement' : 'regular';
+      const data = computeStatementData({
+        businessDate,
+        seq,
+        type,
+        entries: unlocked,
+        employees: state.employees,
+        manualDiffs: existingDraft?.manualDiffs || [],
+        note: existingDraft?.note || '',
+      });
+
+      if (existingDraft) {
+        Object.assign(existingDraft, data);
+        existingDraft.entriesSnapshot = unlocked.map((e) => ({ ...e }));
+      } else {
+        const id = genPaymentId();
+        state.closingStatements.unshift({
+          id,
+          no: statementNo(businessDate, seq),
+          ...data,
+          entriesSnapshot: unlocked.map((e) => ({ ...e })),
+          status: 'draft',
+          createdAt: nowIso(),
+          createdBy: '管理员',
+          revisions: [
+            { id: genRevisionId(), at: nowIso(), operator: '管理员', action: 'create', changes: [] },
+          ],
+        });
+      }
+      saveState(state);
+    },
+
+    /** 结账单草稿：更新备注 / 手工对账说明，并重新汇总对账 */
+    updateDraftStatement: (
+      state,
+      action: PayloadAction<{ id: string; note?: string; manualDiffs?: ManualReconItem[] }>
+    ) => {
+      const stmt = state.closingStatements.find((s) => s.id === action.payload.id);
+      if (!stmt || stmt.status !== 'draft') return;
+      const manualDiffs = action.payload.manualDiffs ?? stmt.manualDiffs;
+      const note = action.payload.note ?? stmt.note;
+      const unlocked = stmt.paymentIds
+        .map((pid) => state.paymentEntries.find((e) => e.id === pid))
+        .filter((e): e is PaymentEntry => !!e && !e.statementId);
+      const data = computeStatementData({
+        businessDate: stmt.businessDate,
+        seq: stmt.seq,
+        type: stmt.type,
+        entries: unlocked,
+        employees: state.employees,
+        manualDiffs,
+        note,
+      });
+      Object.assign(stmt, data);
+      stmt.entriesSnapshot = unlocked.map((e) => ({ ...e }));
+      saveState(state);
+    },
+
+    /** 确认结账单：锁定流水并留档；存在未解释差异时不允许确认 */
+    confirmStatement: (state, action: PayloadAction<{ id: string }>) => {
+      const stmt = state.closingStatements.find((s) => s.id === action.payload.id);
+      if (!stmt || stmt.status === 'confirmed') return;
+      if (!stmt.reconciliation.balanced) {
+        throw new Error('实收金额与提成基数对不上，存在未解释差异，不能确认结账');
+      }
+      const at = nowIso();
+      stmt.paymentIds.forEach((pid) => {
+        const entry = state.paymentEntries.find((e) => e.id === pid);
+        if (entry) entry.statementId = stmt.id;
+      });
+      stmt.entriesSnapshot = stmt.paymentIds
+        .map((pid) => state.paymentEntries.find((e) => e.id === pid))
+        .filter((e): e is PaymentEntry => !!e)
+        .map((e) => ({ ...e }));
+      stmt.status = 'confirmed';
+      stmt.confirmedAt = at;
+      stmt.confirmedBy = '管理员';
+      stmt.revisions.push({
+        id: genRevisionId(),
+        at,
+        operator: '管理员',
+        action: 'confirm',
+        changes: [],
+      });
+      saveState(state);
+    },
+
+    /**
+     * 已确认结账单的修改：
+     * 只能改流水的实收/提成基数/备注、手工对账说明、结账单备注，
+     * 每次改动记录修改痕迹，改完重新汇总并重新校验对账是否仍对得上。
+     */
+    amendConfirmedStatement: (
+      state,
+      action: PayloadAction<{
+        id: string;
+        reason: string;
+        entryPatches?: { id: string; amount?: number; commissionBase?: number; note?: string }[];
+        manualDiffs?: ManualReconItem[];
+        note?: string;
+      }>
+    ) => {
+      const stmt = state.closingStatements.find((s) => s.id === action.payload.id);
+      if (!stmt || stmt.status !== 'confirmed') return;
+
+      const beforeEntries = stmt.entriesSnapshot.map((e) => ({ ...e }));
+      const beforeManual = stmt.manualDiffs.map((m) => ({ ...m }));
+      const beforeNote = stmt.note;
+      const manualDiffs = action.payload.manualDiffs ?? beforeManual;
+      const note = action.payload.note ?? beforeNote;
+
+      // 先在副本上试算，改动后若仍对不上则整笔拒绝，避免污染留档
+      const nextEntries = stmt.entriesSnapshot.map((e) => {
+        const patch = action.payload.entryPatches?.find((p) => p.id === e.id);
+        return patch
+          ? {
+              ...e,
+              amount: patch.amount !== undefined ? round2(patch.amount) : e.amount,
+              commissionBase:
+                patch.commissionBase !== undefined ? round2(patch.commissionBase) : e.commissionBase,
+              note: patch.note !== undefined ? patch.note : e.note,
+            }
+          : { ...e };
+      });
+      const data = computeStatementData({
+        businessDate: stmt.businessDate,
+        seq: stmt.seq,
+        type: stmt.type,
+        entries: nextEntries,
+        employees: state.employees,
+        manualDiffs,
+        note,
+      });
+
+      const changes = diffStatements(
+        beforeEntries,
+        nextEntries,
+        beforeManual,
+        manualDiffs,
+        beforeNote,
+        note
+      );
+      if (!changes.length) return;
+      if (!data.reconciliation.balanced) {
+        throw new Error(
+          `修改后实收与提成基数仍差 ${data.reconciliation.unexplained.toFixed(2)} 元未解释，请补登对账说明`
+        );
+      }
+
+      // 校验通过后再落到实时流水与留档快照
+      action.payload.entryPatches?.forEach((patch) => {
+        const live = state.paymentEntries.find((e) => e.id === patch.id);
+        const snap = stmt.entriesSnapshot.find((e) => e.id === patch.id);
+        if (!live || !snap) return;
+        if (patch.amount !== undefined) {
+          live.amount = round2(patch.amount);
+          snap.amount = live.amount;
+        }
+        if (patch.commissionBase !== undefined) {
+          live.commissionBase = round2(patch.commissionBase);
+          snap.commissionBase = live.commissionBase;
+        }
+        if (patch.note !== undefined) {
+          live.note = patch.note;
+          snap.note = patch.note;
+        }
+      });
+
+      Object.assign(stmt, data);
+      stmt.revisions.push({
+        id: genRevisionId(),
+        at: nowIso(),
+        operator: '管理员',
+        action: 'amend',
+        reason: action.payload.reason,
+        changes,
+      });
+      saveState(state);
+    },
+
+    /** 删除未确认的草稿 */
+    deleteDraftStatement: (state, action: PayloadAction<{ id: string }>) => {
+      const stmt = state.closingStatements.find((s) => s.id === action.payload.id);
+      if (!stmt || stmt.status === 'confirmed') return;
+      state.closingStatements = state.closingStatements.filter((s) => s.id !== stmt.id);
+      saveState(state);
     }
   }
 });
@@ -263,7 +505,13 @@ export const {
   addWaitList,
   updateWaitList,
   deleteWaitList,
-  addServiceRecord
+  addServiceRecord,
+  addPaymentEntry,
+  upsertDraftStatement,
+  updateDraftStatement,
+  confirmStatement,
+  amendConfirmedStatement,
+  deleteDraftStatement
 } = appSlice.actions;
 
 export const store = configureStore({

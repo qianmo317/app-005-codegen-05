@@ -12,6 +12,8 @@ import PackageList from "./pages/services/packages";
 import AppointmentCalendar from "./pages/appointments/calendar";
 import EmployeeSchedule from "./pages/schedules";
 import EmployeeList from "./pages/employees/list";
+import ClosingList from "./pages/closing/list";
+import ClosingDetail from "./pages/closing/detail";
 import "./styles/global.less";
 
 export default function App() {
@@ -54,6 +56,8 @@ export default function App() {
               <Route path="/appointments" element={<AppointmentCalendar />} />
               <Route path="/schedules" element={<EmployeeSchedule />} />
               <Route path="/employees" element={<EmployeeList />} />
+              <Route path="/closing" element={<ClosingList />} />
+              <Route path="/closing/:id" element={<ClosingDetail />} />
             </Routes>
           </MainLayout>
         </Router>
